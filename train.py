@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
+
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR,MultiStepLR
 import torchvision
 from torchvision import transforms
 from torch.utils.data.dataset import Dataset
@@ -10,29 +12,44 @@ import os
 import numpy as np
 import glob
 import time
-import matplotlib.pyplot as plt
-plt.style.use('ggplot')
+import datetime
 
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-valid_ratio = 0.25
+########## set parameters ##########
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 random_seed = 10
-input_size = 128 #will resize image to input_size*input_size
-batch_size = 5
-epoch = 100
-num_workers = 0 #on windows pytorch multi-process need to set dataloader inside __name__=='main__'
+input_size = 224 #will resize image to input_size*input_size
+batch_size = 32
+epoch = 50
+LR_step = [25,40]
+LR_step_ratio = 0.1
+num_workers = 0  #on windows pytorch multi-process need to set dataloader inside __name__=='main__'
+split_val_by_hand = True  #if true, you need to split validation image into another imagefolder
+
+model_name = 'resnet50' #'customized' for custumized network structure in network.py
+use_pretrained = True
+frozen = True
+#pytorch pre-train model: https://pytorch.org/docs/stable/torchvision/models.html
 
 cwd = os.getcwd()
-root_path = os.path.join(cwd,'training_data') #training data root path
-classes = os.listdir(root_path)
+if split_val_by_hand:
+    train_path = 'your/train/imagefolder/path'
+    val_path = 'your/validation/imagefolder/path'
+    classes = os.listdir(train_path)
+else:
+    root_path = os.path.join(cwd,'training_data') #training data path
+    valid_ratio = 0.2
+    classes = os.listdir(root_path)
 
 
-cwd = os.getcwd()
-model_save_path = os.path.join(cwd,'checkpoint')
+#####################################
+
+now_time = str(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+model_save_path = os.path.join(cwd,'checkpoint',model_name+'_'+now_time)
 if not os.path.exists(model_save_path):
     os.makedirs(model_save_path)
 
-# define dataset for dataloader <--equivalent to torchvision.datasets.ImageFolder
+
+# define dataset for dataloader
 class mydataset(Dataset):
     def __init__(self, data_path,transform):
         self.transform = transform
@@ -47,12 +64,12 @@ class mydataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        label = classes.index(imgpath.split('\\')[-2])
-        
+        label = classes.index(imgpath.split(os.sep)[-2])
         return img,label
 
 
-def train(model,device,train_loader,optimizer,epoch,classes_weight=None):
+def train(model,device,train_loader,optimizer,epoch):
+    print('train on %d data......'%len(train_loader.dataset))
     train_loss = 0
     correct = 0
     model.train()
@@ -60,7 +77,7 @@ def train(model,device,train_loader,optimizer,epoch,classes_weight=None):
         data,target = data.to(device),target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = F.nll_loss(output,target,classes_weight)
+        loss = F.cross_entropy(output,target)
         train_loss += loss.item()
         loss.backward()
         optimizer.step()
@@ -68,12 +85,17 @@ def train(model,device,train_loader,optimizer,epoch,classes_weight=None):
         pred = output.argmax(dim=1)
         correct += pred.eq(target).sum().item()
 
-        if batch_ind %30==0:
-            print('Train Epoch: %d [%d/%d](%.2f%%)\tLoss:%.6f' %(epoch, batch_ind*len(data),
-                  len(train_loader.dataset),100.*batch_ind/len(train_loader),loss.item() ))
+        #if batch_ind %30==0: #print during batch runing
+        #    print('Train Epoch: %d [%d/%d](%.2f%%)\tLoss:%.6f' %(epoch, batch_ind*len(data),
+        #          len(train_loader.dataset),100.*batch_ind/len(train_loader),loss.item() ))
 
     train_loss /= len(train_loader.dataset)
-    return train_loss, correct/len(train_loader.dataset)
+    acc = correct/len(train_loader.dataset)
+
+    print('Train epoch:%d, average loss:%.4f, acc:%d/%d(%.3f%%)' %(epoch,train_loss,
+          correct, len(train_loader.dataset), 100*acc))
+
+    return train_loss, acc
 
 
 def val(model,device,val_loader):
@@ -85,7 +107,7 @@ def val(model,device,val_loader):
         for data,target in val_loader:
             data,target = data.to(device),target.to(device)
             output = model(data)
-            val_loss += F.nll_loss(output,target).item() #sum up batch loss
+            val_loss += F.cross_entropy(output,target).item() #sum up batch loss
 
             pred = output.argmax(dim=1)
             correct += pred.eq(target).sum().item()
@@ -97,62 +119,60 @@ def val(model,device,val_loader):
     return val_loss, correct/len(val_loader.dataset)
 
 
+
+
 if __name__=='__main__':
 
-    ### prepare for train,val,test set
-    data_path=[]
-    for c in classes:
-        data_path += glob.glob(os.path.join(root_path,c,'*.jpg'))
-
-    #split val from all train data
-    data_size = len(data_path)
-    indices = list(range(data_size))
-    split = int(np.floor(valid_ratio * data_size))
-    np.random.seed(random_seed)
-    np.random.shuffle(indices)
-    train_indices, val_indices = indices[split:], indices[:split]
-
-    train_path = [data_path[i] for i in train_indices]
-    val_path = [data_path[i] for i in val_indices]
-
-    ### check classes balance in training set ###
-    train_class_cnt = np.zeros(len(classes))
-    for i in range(len(train_path)):
-        train_class_cnt[classes.index(train_path[i].split('\\')[-2])]+=1
-    
-    val_class_cnt = np.zeros(len(classes))
-    for i in range(len(val_path)):
-        val_class_cnt[classes.index(val_path[i].split('\\')[-2])]+=1
-    print('training set class count: '+str(train_class_cnt))
-    print('validation set class count: '+str(val_class_cnt))
-    
-    if np.any(train_class_cnt/sum(train_class_cnt)<0.2):
-        classes_weight = 1-(train_class_cnt/sum(train_class_cnt))
-        classes_weight = torch.tensor(list(classes_weight))
-        print('size imbalance! will weight class in loss')
-    else:
-        classes_weight = None
-    
-    
-    
-    data_transforms = transforms.Compose([transforms.Resize((input_size,input_size)),
+    data_transforms = {
+        'train':
+        transforms.Compose([transforms.Resize((input_size,input_size)),
+                                          transforms.RandomHorizontalFlip(),
+                                          transforms.RandomVerticalFlip(),
+                                          transforms.ToTensor(),
+                                          transforms.Normalize([0.485, 0.456, 0.406],
+                                                               [0.229, 0.224, 0.225]) ]),
+        'validation':
+        transforms.Compose([transforms.Resize((input_size,input_size)),
                                           transforms.ToTensor(),
                                           transforms.Normalize([0.485, 0.456, 0.406],
                                                                [0.229, 0.224, 0.225]) ])
+        }
 
-    # use custom dataset
-    train_data = mydataset(train_path,data_transforms)
-    val_data = mydataset(val_path,data_transforms)
 
-    '''
-    # or use ImageFolder to create dataset and random_split to separate train and validation set
-    from torch.utils.data.dataset import random_split
-    torch.manual_seed(random_seed)
-    init_dataset = torchvision.datasets.ImageFolder(root_path,data_transforms)
-    print(init_dataset.class_to_idx)
-    lengths = [int(len(init_dataset)*0.8), int(len(init_dataset)*0.2)]
-    train_data, val_data = random_split(init_dataset, lengths)
-    '''
+    if not split_val_by_hand:
+        ### prepare for train,val,test set
+        data_path=[]
+        for c in classes:
+            data_path += glob.glob(os.path.join(root_path,c,'*.jpg'))
+
+        #split val from all train data
+        data_size = len(data_path)
+        indices = list(range(data_size))
+        split = int(np.floor(valid_ratio * data_size))
+        np.random.seed(random_seed)
+        np.random.shuffle(indices)
+        train_indices, val_indices = indices[split:], indices[:split]
+
+        train_path = [data_path[i] for i in train_indices]
+        val_path = [data_path[i] for i in val_indices]
+        
+        # use custom dataset
+        train_data = mydataset(train_path,data_transforms['train'])
+        val_data = mydataset(val_path,data_transforms['validation'])
+        # or use ImageFolder to create dataset and random_split to separate train and validation set
+        # but train and val can't use different transform
+        #from torch.utils.data.dataset import random_split
+        #torch.manual_seed(random_seed)
+        #init_dataset = torchvision.datasets.ImageFolder(root_path,data_transforms)
+        #print(init_dataset.class_to_idx)
+        #lengths = [int(len(init_dataset)*(valid_ratio)), int(len(init_dataset)*valid_ratio)]
+        #train_data, val_data = random_split(init_dataset, lengths)
+
+    else:
+        train_data = torchvision.datasets.ImageFolder(train_path,data_transforms['train'])
+        val_data = torchvision.datasets.ImageFolder(val_path,data_transforms['validation'])
+
+
 
 
     train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size,
@@ -160,8 +180,9 @@ if __name__=='__main__':
     val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size,
                                              pin_memory=True,num_workers=num_workers,shuffle=True)
 
-    
-    #see some image
+    '''
+    ## see some image ##
+    import matplotlib.pyplot as plt
     mean,std = torch.tensor([0.485, 0.456, 0.406]),torch.tensor([0.229, 0.224, 0.225])
 
     def show_image(image):
@@ -173,31 +194,34 @@ if __name__=='__main__':
     images, labels = dataiter.next()
     show_image(torchvision.utils.make_grid(images,3))
     print([classes[i] for i in labels])
-    
+    '''
 
-    ### creat model structure ###
+    ### creat model ###
     from torchsummary import summary
-    from network import Net
+    import network
 
-    model = Net(input_size,len(classes)).to(device)
-    summary(model,(3,input_size,input_size))
+
+    model = network.initialize_model(model_name=model_name,input_size=input_size,
+                                     num_classes=len(classes), frozen=frozen
+                                     ,use_pretrained=use_pretrained,device=device)
+    print(summary(model,(3,input_size,input_size)))
     #model.parameters
 
     optimizer = optim.Adam(model.parameters())
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+    #scheduler = StepLR(optimizer, step_size=LR_step_size, gamma=LR_step_ratio)
+    scheduler = MultiStepLR(optimizer, milestones=LR_step, gamma=LR_step_ratio, last_epoch=-1)
 
     ### training ###
     val_loss = 10000000
     val_acc = 0
     train_loss_hist,train_acc_hist = [],[]
     val_loss_hist,val_acc_hist = [],[]
-    print('train on %d data with %d classes......'%(len(train_loader.dataset),len(classes) ))
     for ep in range(1, epoch + 1):
         epoch_begin = time.time()
-        cur_train_loss,cur_train_acc = train(model,device,train_loader,optimizer,ep,classes_weight)
+        cur_train_loss,cur_train_acc = train(model,device,train_loader,optimizer,ep)
         cur_val_loss,cur_val_acc = val(model,device,val_loader)
         scheduler.step()
-        print('elapse:%.2f seconds \n'%(time.time()-epoch_begin))
+        print('elapse:%.2fs \n'%(time.time()-epoch_begin))
 
         if cur_val_loss<=val_loss:
             print('improve validataion loss, saving model...\n')
@@ -222,17 +246,20 @@ if __name__=='__main__':
 
 
     ### graph train hist ###
+    import matplotlib.pyplot as plt
+    #plt.style.use('ggplot')
+
     fig = plt.figure()
     plt.plot(train_loss_hist)
     plt.plot(val_loss_hist)
     plt.legend(['train loss','val loss'],loc='best')
-    plt.savefig('loss.jpg')
+    plt.savefig(os.path.join(model_save_path,'loss.jpg'))
     plt.close(fig)
     fig = plt.figure()
     plt.plot(train_acc_hist)
     plt.plot(val_acc_hist)
     plt.legend(['train acc','val acc'],loc='best')
-    plt.savefig('acc.jpg')
+    plt.savefig(os.path.join(model_save_path,'acc.jpg'))
     plt.close(fig)
 
 
