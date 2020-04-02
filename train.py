@@ -228,8 +228,8 @@ if __name__=='__main__':
     val_loss_hist,val_acc_hist = [],[]
     for ep in range(1, epoch + 1):
         epoch_begin = time.time()
-        cur_train_loss,cur_train_acc = train(model,device,train_loader,optimizer,ep)
-        cur_val_loss,cur_val_acc = val(model,device,val_loader)
+        cur_train_loss,cur_train_acc = train(model,device,train_loader,optimizer,ep,class_weights)
+        cur_val_loss,cur_val_acc = val(model,device,val_loader,class_weights)
         scheduler.step()
         print('elapse:%.2fs \n'%(time.time()-epoch_begin))
 
