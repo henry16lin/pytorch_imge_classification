@@ -13,6 +13,7 @@ import numpy as np
 import glob
 import time
 import datetime
+from loss.loss import *
 
 ########## set parameters ##########
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -40,7 +41,8 @@ else:
     valid_ratio = 0.2
     classes = os.listdir(root_path)
 
-
+class_weights = None #given weight list
+	
 #####################################
 
 now_time = str(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -68,7 +70,7 @@ class mydataset(Dataset):
         return img,label
 
 
-def train(model,device,train_loader,optimizer,epoch):
+def train(model,device,train_loader,optimizer,epoch,class_weights):
     print('train on %d data......'%len(train_loader.dataset))
     train_loss = 0
     correct = 0
@@ -77,7 +79,11 @@ def train(model,device,train_loader,optimizer,epoch):
         data,target = data.to(device),target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = F.cross_entropy(output,target)
+        weights =  torch.tensor(class_weights)
+        #criterion = FocalLoss(weight=weights)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+        loss = criterion(output, target)
+
         train_loss += loss.item()
         loss.backward()
         optimizer.step()
@@ -98,7 +104,7 @@ def train(model,device,train_loader,optimizer,epoch):
     return train_loss, acc
 
 
-def val(model,device,val_loader):
+def val(model,device,val_loader,class_weights):
     print('validation on %d data......'%len(val_loader.dataset))
     model.eval()
     val_loss = 0
@@ -107,7 +113,11 @@ def val(model,device,val_loader):
         for data,target in val_loader:
             data,target = data.to(device),target.to(device)
             output = model(data)
-            val_loss += F.cross_entropy(output,target).item() #sum up batch loss
+            
+            weights =  torch.tensor(class_weights)
+            #criterion = FocalLoss(weight=weights)
+            criterion = nn.CrossEntropyLoss(weight=weights)
+            val_loss += criterion(output, target).item() #sum up batch loss
 
             pred = output.argmax(dim=1)
             correct += pred.eq(target).sum().item()
