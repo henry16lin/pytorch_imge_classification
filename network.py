@@ -26,7 +26,14 @@ def initialize_model(model_name,input_size, num_classes, frozen, use_pretrained,
 
     if model_name == 'customized':
         model = Net(input_size,num_classes).to(device)
-
+    
+    elif model_name.startswith('resnest'):
+        from resnest.torch import resnest50
+        net = resnest50(pretrained=True)
+        model = net.to(device)
+        set_parameter_requires_grad(model, frozen=frozen)
+        model.fc = make_classifier(model.fc.in_features,512,num_classes).to(device)
+    
     else:
 
         try:
