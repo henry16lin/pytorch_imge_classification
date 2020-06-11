@@ -13,6 +13,7 @@ import numpy as np
 import glob
 import time
 import datetime
+from tqdm import tqdm
 from loss.loss import *
 
 ########## set parameters ##########
@@ -71,7 +72,7 @@ class mydataset(Dataset):
 
 
 def train(model,device,train_loader,optimizer,epoch,class_weights):
-    print('train on %d data......'%len(train_loader.dataset))
+    print('[epoch %d]train on %d data......'%(epoch,len(train_loader.dataset)))
     train_loss = 0
     correct = 0
     model.train()
@@ -98,7 +99,7 @@ def train(model,device,train_loader,optimizer,epoch,class_weights):
     train_loss /= len(train_loader.dataset)
     acc = correct/len(train_loader.dataset)
 
-    print('Train epoch:%d, average loss:%.4f, acc:%d/%d(%.3f%%)' %(epoch,train_loss,
+    print('training set: average loss:%.4f, acc:%d/%d(%.3f%%)' %(train_loss,
           correct, len(train_loader.dataset), 100*acc))
 
     return train_loss, acc
