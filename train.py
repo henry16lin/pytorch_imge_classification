@@ -76,7 +76,7 @@ def train(model,device,train_loader,optimizer,epoch,class_weights):
     train_loss = 0
     correct = 0
     model.train()
-    for batch_ind,(data,target) in enumerate(train_loader):
+    for batch_ind,(data,target) in enumerate(tqdm(train_loader)):
         data,target = data.to(device),target.to(device)
         optimizer.zero_grad()
         output = model(data)
